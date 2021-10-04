@@ -17,7 +17,7 @@ def load_data(parameters):
     elif parameters["preprocessing"]=='medium':
         preprocessing = "_shifted_ds_reref_ucbip_hpfilt.set"
     elif parameters["preprocessing"]=='heavy':
-        preprocessing = "_shifted_ds_reref_ucbip_hpfilt_ica_weighted.set"
+        preprocessing = "_shifted_ds_reref_ucbip_hpfilt_ica_corr.set"
     else:
         print("Wrong Preprocessing")    
     if parameters["task"]== "MMN":
@@ -87,13 +87,14 @@ def epoch_raws(list_of_raws, parameters):
 
         (events_from_annot, event_dict) = mne.events_from_annotations(list_of_raws[i], 
                                                                       event_id=custom_mapping)
-        # TODO: Sanity checks on incorrect responses
-        # TODO: Sort event list after combining
+
         # only include events where response is in time and correct
         if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
             events_0, lag_0 = define_target_events(events_from_annot, 0, 201, list_of_raws[0].info['sfreq'], 0, 0.8, 0, 999)
             events_1, lag_1 = define_target_events(events_from_annot, 1, 201, list_of_raws[0].info['sfreq'], 0, 0.8, 1, 999)
             events_from_annot = np.concatenate((events_0, events_1), axis=0)
+            # sort event array by timepoints to get rid of warning
+            events_from_annot = events_from_annot[events_from_annot[:, 0].argsort()]
             event_dict.pop("201")
             event_dict.pop("202")
         
