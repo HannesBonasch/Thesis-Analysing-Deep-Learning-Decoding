@@ -1,163 +1,139 @@
-import HelperFunctions
-import mne
+import mne, mne_bids, HelperFunctions
+import matplotlib.pyplot as plt
 import pandas as pd 
 import numpy as np
-import torch
-from torch.utils.data import TensorDataset
-from mne.event import define_target_events
+from mne_bids import (BIDSPath, read_raw_bids)
+from autoreject import AutoReject
 
+def load_raw(parameters, subject_id):
+    """
+    Loads a single subject from the ERP Core data, applies filtering and ICA, and returns a mne.Raw object.
+    """
+    with HelperFunctions.suppress_stdout():
+        bids_root = parameters["data_path"]+"/"+parameters["task"]
+        bids_path = BIDSPath(subject=subject_id, task=parameters["task"],
+                             session=parameters["task"], datatype='eeg', 
+                             suffix='eeg', root=bids_root)
+        raw = read_raw_bids(bids_path)
+        raw.load_data()
+        HelperFunctions.read_annotations_core(bids_path,raw)
+        raw.set_channel_types({'HEOG_left': 'eog', 'HEOG_right': 'eog', 'VEOG_lower': 'eog'})
+        raw.set_montage('standard_1020',match_case=False)
+        if parameters["preprocessing"] == "medium":
+            raw.filter(0.5,40)
+        if parameters["preprocessing"] == "heavy":
+            raw.filter(0.5,40)
+            ica, badComps = HelperFunctions.load_precomputed_ica(bids_root, subject_id,parameters["task"])
+            HelperFunctions.add_ica_info(raw,ica)
+            ica.apply(raw)
+    return raw
 
-def load_data(parameters):
+def epoch_raw(parameters, raw):
     """
-    Loads the ERP Core Data and returns a list of mne.Raw objects.
+    Takes a mne.Raw object, loads the correct events, and returns a mne.Epoch object.
     """
-    # get correct preprocessing file names
-    if parameters["preprocessing"]=='light':
-        preprocessing = "_shifted_ds_reref_ucbip.set"
-    elif parameters["preprocessing"]=='medium':
-        preprocessing = "_shifted_ds_reref_ucbip_hpfilt.set"
-    elif parameters["preprocessing"]=='heavy':
-        preprocessing = "_shifted_ds_reref_ucbip_hpfilt_ica_corr.set"
-    else:
-        print("Wrong Preprocessing")    
-    if parameters["task"]== "MMN":
-        # cut shifted for MMN
-        preprocessing = preprocessing[8:]
+    with HelperFunctions.suppress_stdout():
+        # get correct tmin, tmax, and event mapping per task
+        custom_mapping, tmin, tmax = get_task_specifics(parameters)
         
-    # first create list of data paths, then read data with mne
-    erp_core_paths = []    
-    for i in range(1,parameters["n_subjects"]+1):
-        erp_core_paths.append(parameters["data_path"] + "/"+parameters["task"]+"/"+str(i)+"/"+str(i)+"_"
-                              +parameters["task"]+preprocessing)
-    list_of_raws = [mne.io.read_raw_eeglab(path, preload=True) for path in erp_core_paths]
-    
-    return list_of_raws
+        # shift annotations by lcd monitor delay
+        if parameters["task"] != "MNE":
+            raw.annotations.onset = raw.annotations.onset+.026
+        
+        # load events
+        (events_from_annot, event_dict) = mne.events_from_annotations(raw, event_id=custom_mapping)
+        
+        if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
+        # only include events where response is in time and correct
+            events_0, lag_0 = mne.event.define_target_events(events_from_annot, 0, 201, raw.info['sfreq'], 0, 0.8, 0, 999)
+            events_1, lag_1 = mne.event.define_target_events(events_from_annot, 1, 201, raw.info['sfreq'], 0, 0.8, 1, 999)
+            events_from_annot = np.concatenate((events_0, events_1), axis=0)
+            # sort event array by timepoints to get rid of warning
+            events_from_annot = events_from_annot[events_from_annot[:, 0].argsort()]
+            # drop responses
+            event_dict.pop('response:201')
+            event_dict.pop('response:202')           
 
+        # epoch with no constant detrend to remove dc offset
+        epoch = mne.Epochs(raw, events_from_annot, event_dict,
+                           tmin=tmin,tmax=tmax, preload=True,
+                           reject_by_annotation=True, baseline=None, 
+                           picks=range(0,30), detrend=0)
+        
+        # apply autoreject for heavy preprocessing to remove artefacts
+        if parameters["preprocessing"] == "heavy":
+            ar = AutoReject()
+            epoch = ar.fit_transform(epoch) 
+    return epoch
 
-def epoch_raws(list_of_raws, parameters):
-    # TODO: This could be a bit cleaner.
+def get_task_specifics(parameters):
     """
-    Takes a list of mne.Raw objects, epochs them using the correct tmin, tmax, 
-    and events for each task, and then returns a dataframe containing all epochs.
-    """   
-    # get correct tmin, tmax, and event mapping per task
+    Returns mapping, tmin, tmax, specific to the task.
+    """
     tmin = -0.2
     tmax = 0.8
     if parameters["task"] == "N170":
         # Cars: 0, Faces: 1
-        custom_mapping = dict((str(i), 1) for i in range(0,41))
-        custom_mapping.update(dict((str(i), 0) for i in range(41,81)))
+        custom_mapping = dict(("stimulus:"+str(i), 1) for i in range(0,41))
+        custom_mapping.update(dict(("stimulus:"+str(i), 0) for i in range(41,81)))
     elif parameters["task"] == "N400":
         # unrelated word: 0, Related word: 1
-        custom_mapping = {'221': 0, '222': 0, '211': 1, '212': 1} 
-    elif parameters["task"] == "N2pc":
-        # left: 0, right: 1
-        custom_mapping = {'111': 0, '112': 0, '211': 0, '212': 0, 
-                          '121': 1, '122': 1, '221': 1, '222': 1}
+        custom_mapping = {'stimulus:221': 0, 'stimulus:222': 0, 
+                          'stimulus:211': 1, 'stimulus:212': 1} 
     elif parameters["task"] == "P3":
         # target=stimulus (rare): 0, target!=stimulus (frequent): 1
-        custom_mapping = {'11': 0, '12': 1, '13': 1, '14': 1, '15': 1, 
-                          '21': 1, '22': 0, '23': 1, '24': 1, '25': 1,
-                          '31': 1, '32': 1, '33': 0, '34': 1, '35': 1,
-                          '41': 1, '42': 1, '43': 1, '44': 0, '45': 1,
-                          '51': 1, '52': 1, '53': 1, '54': 1, '55': 0}
-    elif parameters["task"] == "MMN":
-        # deviant: 0, standard: 1
-        custom_mapping = {'70': 0, '80': 1}
-    elif parameters["task"] == "ERN":
-        # incorrect: 0, correct: 1
-        custom_mapping = {'112': 0, '122': 0, '211': 0, '221': 0,
-                          '111': 1, '121': 1, '212': 1, '222': 1}
-        tmin = -0.6
-        tmax = 0.4
-    elif parameters["task"] == "LRP":
-        # left response: 0, right response: 1
-        custom_mapping = {'111': 0, '112': 0, '121': 0, '122': 0, 
-                          '211': 1, '212': 1, '221': 1, '222': 1}
-        tmin = -0.8
-        tmax = 0.2
+        custom_mapping = {'stimulus:11': 0, 'stimulus:12': 1, 'stimulus:13': 1, 'stimulus:14': 1, 'stimulus:15': 1, 
+                          'stimulus:21': 1, 'stimulus:22': 0, 'stimulus:23': 1, 'stimulus:24': 1, 'stimulus:25': 1,
+                          'stimulus:31': 1, 'stimulus:32': 1, 'stimulus:33': 0, 'stimulus:34': 1, 'stimulus:35': 1,
+                          'stimulus:41': 1, 'stimulus:42': 1, 'stimulus:43': 1, 'stimulus:44': 0, 'stimulus:45': 1,
+                          'stimulus:51': 1, 'stimulus:52': 1, 'stimulus:53': 1, 'stimulus:54': 1, 'stimulus:55': 0}
+    # add button responses to tasks that have them
+    if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
+            custom_mapping.update({'response:201': 201, 'response:202': 202})
+    return custom_mapping, tmin, tmax
 
-    # create list of epoch dataframes including all subjects
-    list_of_epochs = []
-    for i in range(0,parameters["n_subjects"]):
-        # add responses
-        if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
-            custom_mapping.update({'201': 201, '202': 202})
-
-
-        (events_from_annot, event_dict) = mne.events_from_annotations(list_of_raws[i], 
-                                                                      event_id=custom_mapping)
-
-        # only include events where response is in time and correct
-        if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
-            events_0, lag_0 = define_target_events(events_from_annot, 0, 201, list_of_raws[0].info['sfreq'], 0, 0.8, 0, 999)
-            events_1, lag_1 = define_target_events(events_from_annot, 1, 201, list_of_raws[0].info['sfreq'], 0, 0.8, 1, 999)
-            events_from_annot = np.concatenate((events_0, events_1), axis=0)
-            # sort event array by timepoints to get rid of warning
-            events_from_annot = events_from_annot[events_from_annot[:, 0].argsort()]
-            event_dict.pop("201")
-            event_dict.pop("202")
-        
-        epoch = mne.Epochs(list_of_raws[i], events_from_annot, event_dict,tmin=tmin,tmax=tmax, 
-                           reject_by_annotation=False, baseline=(None,0), picks=range(0,28))
-        epoch = epoch.to_data_frame()
-        epoch["subjectID"]=i+1
-        list_of_epochs.append(epoch)
-        
-    df_epochs = pd.concat(list_of_epochs, axis=0)
+def create_df(parameters):
+    df_list = []
+    for i in range(parameters["n_subjects"]):
+        subjectID = f"{i+1:03d}"
+        raw = load_raw(parameters, subjectID)
+        epoch = epoch_raw(parameters, raw)
+        df = epoch.to_data_frame()
+        df["subjectID"] = i
+        df_list.append(df)
+    df = pd.concat(df_list, axis=0)
     
     # change condition naming to binary labels
+    custom_mapping = get_task_specifics(parameters)[0]
     for condition in custom_mapping:
-        df_epochs["condition"] = df_epochs["condition"].replace(condition,custom_mapping[condition])
-        
-    return df_epochs
-
-
-def load_dataframe(parameters):
-    # TODO: This might be better with df_epochs as an input instead of running load_data and epoch_raws
-    """
-    Loads data, epochs it, then reshapes the dataframe into data and labels.
-    """
-     # load data and epoch
-    list_of_raws = load_data(parameters)
-    df_epochs = epoch_raws(list_of_raws, parameters)
+        df["condition"] = df["condition"].replace(condition,custom_mapping[condition])
     
-    # TODO: Get rid of fixed number for unique timepoints
     # reshape data
-    data = df_epochs.iloc[:,3:31]
-    #data = (df_epochs.iloc[:,3:31]-df_epochs.iloc[:,3:31].mean())/df_epochs.iloc[:,3:31].std()
-    data = data.to_numpy().reshape(int(data.shape[0]/257), 257, -1)
+    data = df.iloc[:,3:33]
+    data = data.to_numpy().reshape(int(data.shape[0]/parameters["input_window_samples"]), parameters["input_window_samples"], -1)
     data = np.transpose(data,axes=[0,2,1])
-    
     # create labels
-    df = df_epochs[["epoch","condition","subjectID"]].drop_duplicates()
+    df = df[["epoch","condition","subjectID"]].drop_duplicates()
     df = df.reset_index()
     
     df["data"]=pd.Series(list(data))
     df = df.drop(columns=["index"])
-    
     return df
 
+def load_df(parameters):
+    df = pd.read_pickle(parameters["data_path"]+"/Dataframes/"+parameters["task"]+"_"+parameters["preprocessing"]+".pkl")
+    return df
 
-def create_data_labels(df):
+def create_data_labels(df, list_of_subjects=None):
     """
     Takes dataframe and returns numpy versions of the data and labels. 
     """
     # get data from dataframe and reshape back
+    if list_of_subjects != None:
+        df = df[df["subjectID"].isin(list_of_subjects)]
     data = np.dstack(df["data"].to_numpy())
     data = np.moveaxis(data, -1, 0)
     # get labels from dataframe
     labels = df["condition"].to_numpy()
     
     return data, labels
-
-
-def create_dataset(df):
-    """
-    Takes dataframe and returns pytorch dataset. 
-    """
-    data, labels = create_data_labels(df)
-    # create dataset
-    dataset = TensorDataset(torch.from_numpy(data).float(),torch.from_numpy(labels).float())
-    
-    return dataset

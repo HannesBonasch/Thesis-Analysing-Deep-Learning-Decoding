@@ -154,3 +154,33 @@ def load_exp(parameters):
     df = pd.concat(df_list,axis=1)
     
     return df
+
+def run_exp_per_subject(df, parameters):
+    """
+    Trains classifier on all but one subject and saves parameters and history.
+    """
+    # path to save parameters to
+    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
+        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    Path(model_path).mkdir(parents=True, exist_ok=True)
+    json.dump(parameters, open(model_path+"parameters.json", 'w' ))
+        
+    # train and validate on each subject, then save parameters and history
+    for i in range(parameters["n_subjects"]):
+        list_train = list(range(parameters["n_subjects"]))
+        list_train.remove(i)
+        data, labels = DataLoader.create_data_labels(df, list_train)
+        # calculate class weights
+        class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
+        class_weights=torch.tensor(class_weights,dtype=torch.float)
+        
+        valid_data, valid_labels = DataLoader.create_data_labels(df, [i])
+        valid_ds = TensorDataset(torch.from_numpy(valid_data), torch.from_numpy(valid_labels))
+        
+        
+        clf = init_model(parameters, valid_ds, class_weights)
+        clf.fit(data, y=labels, epochs=parameters["n_epochs"])
+        clf.save_params(f_params=model_path+"split_"+str(i)+"_model.pkl",
+                       f_optimizer=model_path+"split_"+str(i)+"_optimizer.pkl",
+                       f_history=model_path+"split_"+str(i)+"_history.json")
+ 
