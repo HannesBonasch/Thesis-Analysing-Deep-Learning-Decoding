@@ -26,6 +26,7 @@ def load_raw(parameters, subject_id):
             ica, badComps = HelperFunctions.load_precomputed_ica(bids_root, subject_id,parameters["task"])
             HelperFunctions.add_ica_info(raw,ica)
             ica.apply(raw)
+        raw = raw.resample(250)
     return raw
 
 def epoch_raw(parameters, raw):
@@ -70,8 +71,8 @@ def get_task_specifics(parameters):
     """
     Returns mapping, tmin, tmax, specific to the task.
     """
-    tmin = -0.2
-    tmax = 0.8
+    tmin = -0.20
+    tmax = 0.82
     if parameters["task"] == "N170":
         # Cars: 0, Faces: 1
         custom_mapping = dict(("stimulus:"+str(i), 1) for i in range(0,41))
@@ -121,7 +122,7 @@ def create_df(parameters):
     return df
 
 def load_df(parameters):
-    df = pd.read_pickle(parameters["data_path"]+"/Dataframes/"+parameters["task"]+"_"+parameters["preprocessing"]+".pkl")
+    df = pd.read_pickle(parameters["data_path"]+"/Dataframes/"+parameters["task"]+"_ds_"+parameters["preprocessing"]+".pkl")
     return df
 
 def create_data_labels(df, list_of_subjects=None):
