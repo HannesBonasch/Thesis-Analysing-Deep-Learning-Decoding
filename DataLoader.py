@@ -10,7 +10,7 @@ def load_raw(parameters, subject_id):
     Loads a single subject from the ERP Core data, applies filtering and ICA, and returns a mne.Raw object.
     """
     with HelperFunctions.suppress_stdout():
-        bids_root = parameters["data_path"]+"/"+parameters["task"]
+        bids_root = parameters["data_path"]+"/"+"ERP_CORE_BIDS_Raw_Files"
         bids_path = BIDSPath(subject=subject_id, task=parameters["task"],
                              session=parameters["task"], datatype='eeg', 
                              suffix='eeg', root=bids_root)
@@ -38,7 +38,7 @@ def epoch_raw(parameters, raw):
         custom_mapping, tmin, tmax = get_task_specifics(parameters)
         
         # shift annotations by lcd monitor delay
-        if parameters["task"] != "MNE":
+        if parameters["task"] != "MMN":
             raw.annotations.onset = raw.annotations.onset+.026
         
         # load events
@@ -72,7 +72,7 @@ def get_task_specifics(parameters):
     Returns mapping, tmin, tmax, specific to the task.
     """
     tmin = -0.20
-    tmax = 0.82
+    tmax = 0.815
     if parameters["task"] == "N170":
         # Cars: 0, Faces: 1
         custom_mapping = dict(("stimulus:"+str(i), 1) for i in range(0,41))
@@ -88,6 +88,25 @@ def get_task_specifics(parameters):
                           'stimulus:31': 1, 'stimulus:32': 1, 'stimulus:33': 0, 'stimulus:34': 1, 'stimulus:35': 1,
                           'stimulus:41': 1, 'stimulus:42': 1, 'stimulus:43': 1, 'stimulus:44': 0, 'stimulus:45': 1,
                           'stimulus:51': 1, 'stimulus:52': 1, 'stimulus:53': 1, 'stimulus:54': 1, 'stimulus:55': 0}
+    elif parameters["task"] == "N2pc":
+        # left: 0, right: 1
+        custom_mapping = {'stimulus:111': 0, 'stimulus:112': 0, 'stimulus:211': 0, 'stimulus:212': 0, 
+                          'stimulus:121': 1, 'stimulus:122': 1, 'stimulus:221': 1, 'stimulus:222': 1}
+    elif parameters["task"] == "MMN":
+        # deviant: 0, standard: 1
+        custom_mapping = {'stimulus:70': 0, 'stimulus:80': 1}
+    elif parameters["task"] == "ERN":
+        # incorrect: 0, correct: 1
+        custom_mapping = {'stimulus:112': 0, 'stimulus:122': 0, 'stimulus:211': 0, 'stimulus:221': 0,
+                          'stimulus:111': 1, 'stimulus:121': 1, 'stimulus:212': 1, 'stimulus:222': 1}
+        tmin = -0.6
+        tmax = 0.4
+    elif parameters["task"] == "LRP":
+        # left response: 0, right response: 1
+        custom_mapping = {'stimulus:111': 0, 'stimulus:112': 0, 'stimulus:121': 0, 'stimulus:122': 0, 
+                          'stimulus:211': 1, 'stimulus:212': 1, 'stimulus:221': 1, 'stimulus:222': 1}
+        tmin = -0.8
+        tmax = 0.2
     # add button responses to tasks that have them
     if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
             custom_mapping.update({'response:201': 201, 'response:202': 202})

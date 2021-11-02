@@ -1,8 +1,5 @@
 import DataLoader
-import torch
-import sklearn
-import os
-import json
+import torch, skorch, sklearn, os, json
 import numpy as np
 import pandas as pd
 from braindecode.util import set_random_seeds
@@ -74,12 +71,13 @@ def init_model(parameters, valid_ds=None, class_weights=None):
         model = TCN(
             parameters["n_chans"],
             parameters["n_classes"],
-            n_filters=15,
+            n_filters=50,
             n_blocks=7,
             kernel_size=2,
             drop_prob=0.3,
             add_log_softmax=True
         )
+    
     # send model to gpu
     if cuda:
         model.cuda()
@@ -100,9 +98,11 @@ def init_model(parameters, valid_ds=None, class_weights=None):
         optimizer__weight_decay=parameters["weight_decay"],
         batch_size=parameters["batch_size"],
         callbacks=[
-            "accuracy",
-            "balanced_accuracy",
+            #"accuracy",
+            #"balanced_accuracy",
             #"roc_auc",
+            ("train_balanced_accuracy", skorch.callbacks.EpochScoring(scoring='balanced_accuracy', on_train=True, name="train_balanced_accuracy", lower_is_better=False)),
+            ("valid_balanced_accuracy", skorch.callbacks.EpochScoring(scoring='balanced_accuracy', on_train=False, name="valid_balanced_accuracy", lower_is_better=False)),
             ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=parameters["n_epochs"] - 1)),
         ],
         device=device,
@@ -126,6 +126,11 @@ def run_exp(data, labels, parameters):
     # calculate class weights
     class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
     class_weights=torch.tensor(class_weights,dtype=torch.float)
+    class_weights = class_weights.to('cuda')
+    
+    # push data and labels to gpu
+    dataset = TensorDataset(torch.from_numpy(data).to('cuda'),
+                            torch.from_numpy(labels).to('cuda'))
     
     # create stratified splits
     cv = sklearn.model_selection.StratifiedShuffleSplit(parameters["n_splits"], test_size=0.2, random_state=42)
@@ -135,9 +140,9 @@ def run_exp(data, labels, parameters):
     i = 0
     for train_idx, test_idx in cv_split:
         i += 1
-        valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
-        clf = init_model(parameters, valid_ds, class_weights)
-        clf.fit(data[train_idx], y=labels[train_idx], epochs=parameters["n_epochs"])
+        #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
+        clf = init_model(parameters, torch.utils.data.Subset(dataset, test_idx), class_weights)
+        clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=parameters["n_epochs"])
         clf.save_params(f_params=model_path+"split_"+str(i)+"_model.pkl",
                        f_optimizer=model_path+"split_"+str(i)+"_optimizer.pkl",
                        f_history=model_path+"split_"+str(i)+"_history.json")
@@ -173,14 +178,56 @@ def run_exp_per_subject(df, parameters):
         # calculate class weights
         class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
         class_weights=torch.tensor(class_weights,dtype=torch.float)
+        class_weights = class_weights.to('cuda')
+        # push data and labels to gpu
+        dataset = TensorDataset(torch.from_numpy(data).to('cuda'),
+                                torch.from_numpy(labels).to('cuda'))
         
         valid_data, valid_labels = DataLoader.create_data_labels(df, [i])
-        valid_ds = TensorDataset(torch.from_numpy(valid_data), torch.from_numpy(valid_labels))
+        valid_dataset = TensorDataset(torch.from_numpy(valid_data).to('cuda'),
+                                      torch.from_numpy(valid_labels).to('cuda'))
         
         
-        clf = init_model(parameters, valid_ds, class_weights)
-        clf.fit(data, y=labels, epochs=parameters["n_epochs"])
+        clf = init_model(parameters, valid_dataset, class_weights)
+        clf.fit(dataset, y=None, epochs=parameters["n_epochs"])
         clf.save_params(f_params=model_path+"split_"+str(i)+"_model.pkl",
                        f_optimizer=model_path+"split_"+str(i)+"_optimizer.pkl",
                        f_history=model_path+"split_"+str(i)+"_history.json")
- 
+        
+def run_exp_single_subject(df, parameters):
+    """
+    Trains classifier on single subject and saves parameters and history.
+    """
+    # path to save parameters to
+    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
+        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    Path(model_path).mkdir(parents=True, exist_ok=True)
+    json.dump(parameters, open(model_path+"parameters.json", 'w' ))
+        
+    # train and validate on each subject, then save parameters and history
+    for subjectID in range(parameters["n_subjects"]):
+        data, labels = DataLoader.create_data_labels(df, [subjectID])
+        # calculate class weights
+        class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
+        class_weights=torch.tensor(class_weights,dtype=torch.float)
+        class_weights = class_weights.to('cuda')
+        # push data and labels to gpu
+        dataset = TensorDataset(torch.from_numpy(data).to('cuda'),
+                                torch.from_numpy(labels).to('cuda'))
+        
+        
+        
+        # create stratified splits
+        cv = sklearn.model_selection.StratifiedShuffleSplit(parameters["n_splits"], test_size=0.2, random_state=42)
+        cv_split = cv.split(data,labels)
+
+        # train and validate on each split, then save parameters and history
+        i = 0
+        for train_idx, test_idx in cv_split:
+            i += 1
+            #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
+            clf = init_model(parameters, torch.utils.data.Subset(dataset, test_idx), class_weights)
+            clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=parameters["n_epochs"])
+            clf.save_params(f_params=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_model.pkl",
+                           f_optimizer=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_optimizer.pkl",
+                           f_history=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_history.json")
