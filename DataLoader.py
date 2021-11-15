@@ -97,16 +97,16 @@ def get_task_specifics(parameters):
         custom_mapping = {'stimulus:70': 0, 'stimulus:80': 1}
     elif parameters["task"] == "ERN":
         # incorrect: 0, correct: 1
-        custom_mapping = {'stimulus:112': 0, 'stimulus:122': 0, 'stimulus:211': 0, 'stimulus:221': 0,
-                          'stimulus:111': 1, 'stimulus:121': 1, 'stimulus:212': 1, 'stimulus:222': 1}
+        custom_mapping = {'response:112': 0, 'response:122': 0, 'response:211': 0, 'response:221': 0,
+                          'response:111': 1, 'response:121': 1, 'response:212': 1, 'response:222': 1}
         tmin = -0.6
-        tmax = 0.4
+        tmax = 0.415
     elif parameters["task"] == "LRP":
         # left response: 0, right response: 1
-        custom_mapping = {'stimulus:111': 0, 'stimulus:112': 0, 'stimulus:121': 0, 'stimulus:122': 0, 
-                          'stimulus:211': 1, 'stimulus:212': 1, 'stimulus:221': 1, 'stimulus:222': 1}
+        custom_mapping = {'response:111': 0, 'response:112': 0, 'response:121': 0, 'response:122': 0, 
+                          'response:211': 1, 'response:212': 1, 'response:221': 1, 'response:222': 1}
         tmin = -0.8
-        tmax = 0.2
+        tmax = 0.215
     # add button responses to tasks that have them
     if parameters["reject_incorrect_responses"] == True and parameters["task"] in ["N170", "N400", "N2pc", "P3"]:
             custom_mapping.update({'response:201': 201, 'response:202': 202})
