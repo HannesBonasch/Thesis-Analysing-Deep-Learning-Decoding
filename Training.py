@@ -1,5 +1,4 @@
-import DataLoader
-import torch, skorch, sklearn, os, json
+import torch, skorch, sklearn, os, json, DataLoader
 import numpy as np
 import pandas as pd
 from braindecode.util import set_random_seeds
@@ -12,34 +11,36 @@ from skorch.helper import predefined_split
 from pathlib import Path
 from sklearn.utils import class_weight
 
-
-def init_model(parameters, valid_ds=None, class_weights=None):
+def init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+               n_classes=2, weight_decay=0, seed=42, 
+               input_window_samples=251, valid_ds=None, class_weights=None,
+               gpu=True):
     # TODO: Add more models.
     """
-    Initializes the model and classifier depending on the parameters.
+    Initializes the model and classifier.
     """
-    # choosing gpu if possible
-    cuda = torch.cuda.is_available()
-    device = 'cuda' if cuda else 'cpu'
-    if cuda:
+    if gpu and torch.cuda.is_available():
+        device = 'cuda'
         torch.backends.cudnn.benchmark = True
-    # set seed for reproducability
-    set_random_seeds(seed=parameters["seed"], cuda=cuda)
-    
+        # set seed for reproducability
+        set_random_seeds(seed=seed, cuda=True)
+    else:
+        device = 'cpu'
+        set_random_seeds(seed=seed, cuda=False)
     
     # load model
-    if parameters["model"] == "eegnet":
+    if model_name == "eegnet":
         model = EEGNetv4(
-            parameters["n_chans"],
-            parameters["n_classes"],
-            input_window_samples=parameters["input_window_samples"],
+            n_chan,
+            n_classes,
+            input_window_samples=input_window_samples,
             final_conv_length="auto",
         )
-    elif parameters["model"] == "shallow":
+    elif model_name == "shallow":
         model = ShallowFBCSPNet(
-            parameters["n_chans"],
-            parameters["n_classes"],
-            input_window_samples=parameters["input_window_samples"],
+            n_chan,
+            n_classes,
+            input_window_samples=input_window_samples,
             n_filters_time=40, 
             filter_time_length=25, 
             n_filters_spat=40, 
@@ -48,15 +49,15 @@ def init_model(parameters, valid_ds=None, class_weights=None):
             final_conv_length="auto"
             
         )
-    elif parameters["model"] == "deep":
+    elif model_name == "deep":
         model = Deep4Net(
-            parameters["n_chans"],
-            parameters["n_classes"],
-            input_window_samples=parameters["input_window_samples"],
+            n_chan,
+            n_classes,
+            input_window_samples=input_window_samples,
             n_filters_time=25, 
             n_filters_spat=25, 
             filter_time_length=10,
-            # TODO: changed stride, need to better figure out why it's needed
+            # changed stride to fit shorter input
             pool_time_length=2, 
             pool_time_stride=2, 
             n_filters_2=50, 
@@ -67,10 +68,10 @@ def init_model(parameters, valid_ds=None, class_weights=None):
             filter_length_4=10,
             final_conv_length="auto",
         )
-    elif parameters["model"] == "tcn":
+    elif model_name == "tcn":
         model = TCN(
-            parameters["n_chans"],
-            parameters["n_classes"],
+            n_chan,
+            n_classes,
             n_filters=50,
             n_blocks=7,
             kernel_size=2,
@@ -79,7 +80,7 @@ def init_model(parameters, valid_ds=None, class_weights=None):
         )
     
     # send model to gpu
-    if cuda:
+    if device == 'cuda':
         model.cuda()
         
     if valid_ds==None:
@@ -94,16 +95,16 @@ def init_model(parameters, valid_ds=None, class_weights=None):
         criterion__weight=class_weights,
         optimizer=torch.optim.AdamW,
         train_split=train_split,
-        optimizer__lr=parameters["lr"],
-        optimizer__weight_decay=parameters["weight_decay"],
-        batch_size=parameters["batch_size"],
+        optimizer__lr=lr,
+        optimizer__weight_decay=weight_decay,
+        batch_size=batch_size,
         callbacks=[
             #"accuracy",
             #"balanced_accuracy",
             #"roc_auc",
             ("train_balanced_accuracy", skorch.callbacks.EpochScoring(scoring='balanced_accuracy', on_train=True, name="train_balanced_accuracy", lower_is_better=False)),
             ("valid_balanced_accuracy", skorch.callbacks.EpochScoring(scoring='balanced_accuracy', on_train=False, name="valid_balanced_accuracy", lower_is_better=False)),
-            ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=parameters["n_epochs"] - 1)),
+            ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=n_epochs - 1)),
         ],
         device=device,
     )
@@ -111,17 +112,16 @@ def init_model(parameters, valid_ds=None, class_weights=None):
     # number of trainable parameters
     #print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     
-    return clf
+    return clf, model
 
-def run_exp(data, labels, parameters):
+def run_exp(data, labels, task, preprocessing, model_folder, model_name, 
+            lr, n_epochs, n_splits, batch_size=64, additional_save_param=""):
     """
     Trains classifier using Stratified Cross Validation and saves parameters and history.
     """
-    # path to save parameters to
-    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
-        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    # path to save to
+    model_path = os.getcwd()+"\\"+model_folder+"\\"+model_name+"\\"+task+"\\"+preprocessing+"\\"
     Path(model_path).mkdir(parents=True, exist_ok=True)
-    json.dump(parameters, open(model_path+"parameters.json", 'w' ))
     
     # calculate class weights
     class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
@@ -133,7 +133,7 @@ def run_exp(data, labels, parameters):
                             torch.from_numpy(labels).to('cuda'))
     
     # create stratified splits
-    cv = sklearn.model_selection.StratifiedShuffleSplit(parameters["n_splits"], test_size=0.2, random_state=42)
+    cv = sklearn.model_selection.StratifiedShuffleSplit(n_splits, test_size=0.2, random_state=42)
     cv_split = cv.split(data,labels)
 
     # train and validate on each split, then save parameters and history
@@ -141,38 +141,43 @@ def run_exp(data, labels, parameters):
     for train_idx, test_idx in cv_split:
         i += 1
         #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
-        clf = init_model(parameters, torch.utils.data.Subset(dataset, test_idx), class_weights)
-        clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=parameters["n_epochs"])
-        clf.save_params(f_params=model_path+"split_"+str(i)+"_model.pkl",
-                       f_optimizer=model_path+"split_"+str(i)+"_optimizer.pkl",
-                       f_history=model_path+"split_"+str(i)+"_history.json")
+        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+               n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
+               valid_ds=torch.utils.data.Subset(dataset, test_idx), 
+               class_weights=class_weights, gpu=True)
+        #clf, model = init_model(model_name, lr, n_epochs, batch_size, 
+        #                        valid_ds=torch.utils.data.Subset(dataset, test_idx), 
+        #                        class_weights=class_weights)  
+        clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=n_epochs)
+        clf.save_params(f_params=model_path+"split_"+str(i)+additional_save_param+"_model.pkl",
+                       f_optimizer=model_path+"split_"+str(i)+additional_save_param+"_optimizer.pkl",
+                       f_history=model_path+"split_"+str(i)+additional_save_param+"_history.json")
         
-def load_exp(parameters):
+def load_exp(model_folder, model_name, task, preprocessing, n_splits, model_path=None, additional_save_param=""):
     """
     Loads the history json and puts it in a dataframe.
     """
-    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
-        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    if model_path == None:
+        model_path = os.getcwd()+"\\"+model_folder+"\\"+model_name+"\\"+task+"\\"+preprocessing+"\\"
     df_list = []
-    for i in range(1,parameters["n_splits"]+1):
-        df_list.append(pd.read_json(model_path+"split_"+str(i)+"_history.json"))
+    for i in range(1,n_splits+1):
+        df_list.append(pd.read_json(model_path+"split_"+str(i)+additional_save_param+"_history.json"))
     df = pd.concat(df_list,axis=1)
     
     return df
 
-def run_exp_per_subject(df, parameters):
+def run_exp_per_subject(df, task, preprocessing, model_folder, model_name, 
+            lr, n_epochs, batch_size=64, n_subjects=40):
     """
     Trains classifier on all but one subject and saves parameters and history.
     """
-    # path to save parameters to
-    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
-        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    # path to save to
+    model_path = os.getcwd()+"\\"+model_folder+"\\"+model_name+"\\"+task+"\\"+preprocessing+"\\"
     Path(model_path).mkdir(parents=True, exist_ok=True)
-    json.dump(parameters, open(model_path+"parameters.json", 'w' ))
         
     # train and validate on each subject, then save parameters and history
-    for i in range(parameters["n_subjects"]):
-        list_train = list(range(parameters["n_subjects"]))
+    for i in range(n_subjects):
+        list_train = list(range(n_subjects))
         list_train.remove(i)
         data, labels = DataLoader.create_data_labels(df, list_train)
         # calculate class weights
@@ -187,25 +192,26 @@ def run_exp_per_subject(df, parameters):
         valid_dataset = TensorDataset(torch.from_numpy(valid_data).to('cuda'),
                                       torch.from_numpy(valid_labels).to('cuda'))
         
-        
-        clf = init_model(parameters, valid_dataset, class_weights)
-        clf.fit(dataset, y=None, epochs=parameters["n_epochs"])
+        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+                               n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
+                               valid_ds=valid_dataset, 
+                               class_weights=class_weights, gpu=True)
+        clf.fit(dataset, y=None, epochs=n_epochs)
         clf.save_params(f_params=model_path+"split_"+str(i)+"_model.pkl",
                        f_optimizer=model_path+"split_"+str(i)+"_optimizer.pkl",
                        f_history=model_path+"split_"+str(i)+"_history.json")
-        
-def run_exp_single_subject(df, parameters):
+ 
+def run_exp_single_subject(df, task, preprocessing, model_folder, model_name, 
+            lr, n_epochs, n_splits, batch_size=64, n_subjects=40):
     """
     Trains classifier on single subject and saves parameters and history.
     """
     # path to save parameters to
-    model_path = os.getcwd()+"\\"+parameters["model_folder"]+"\\"+parameters[
-        "model"]+"\\"+parameters["task"]+"\\"+parameters["preprocessing"]+"\\"
+    model_path = os.getcwd()+"\\"+model_folder+"\\"+model_name+"\\"+task+"\\"+preprocessing+"\\"
     Path(model_path).mkdir(parents=True, exist_ok=True)
-    json.dump(parameters, open(model_path+"parameters.json", 'w' ))
         
     # train and validate on each subject, then save parameters and history
-    for subjectID in range(parameters["n_subjects"]):
+    for subjectID in range(n_subjects):
         data, labels = DataLoader.create_data_labels(df, [subjectID])
         # calculate class weights
         class_weights=class_weight.compute_class_weight('balanced',np.unique(labels),labels)
@@ -218,7 +224,7 @@ def run_exp_single_subject(df, parameters):
         
         
         # create stratified splits
-        cv = sklearn.model_selection.StratifiedShuffleSplit(parameters["n_splits"], test_size=0.2, random_state=42)
+        cv = sklearn.model_selection.StratifiedShuffleSplit(n_splits, test_size=0.2, random_state=42)
         cv_split = cv.split(data,labels)
 
         # train and validate on each split, then save parameters and history
@@ -226,8 +232,11 @@ def run_exp_single_subject(df, parameters):
         for train_idx, test_idx in cv_split:
             i += 1
             #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
-            clf = init_model(parameters, torch.utils.data.Subset(dataset, test_idx), class_weights)
-            clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=parameters["n_epochs"])
+            clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+                               n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
+                               valid_ds=torch.utils.data.Subset(dataset, test_idx), 
+                               class_weights=class_weights, gpu=True)
+            clf.fit(torch.utils.data.Subset(dataset, train_idx), y=None, epochs=n_epochs)
             clf.save_params(f_params=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_model.pkl",
                            f_optimizer=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_optimizer.pkl",
                            f_history=model_path+"subject_"+str(subjectID)+"_split_"+str(i)+"_history.json")
