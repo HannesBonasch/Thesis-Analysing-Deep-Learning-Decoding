@@ -11,11 +11,10 @@ from skorch.helper import predefined_split
 from pathlib import Path
 from sklearn.utils import class_weight
 
-def init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+def init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=30, 
                n_classes=2, weight_decay=0, seed=42, 
                input_window_samples=251, valid_ds=None, class_weights=None,
                gpu=True):
-    # TODO: Add more models.
     """
     Initializes the model and classifier.
     """
@@ -141,7 +140,7 @@ def run_exp(data, labels, task, preprocessing, model_folder, model_name,
     for train_idx, test_idx in cv_split:
         i += 1
         #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
-        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=30, 
                n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
                valid_ds=torch.utils.data.Subset(dataset, test_idx), 
                class_weights=class_weights, gpu=True)
@@ -192,7 +191,7 @@ def run_exp_per_subject(df, task, preprocessing, model_folder, model_name,
         valid_dataset = TensorDataset(torch.from_numpy(valid_data).to('cuda'),
                                       torch.from_numpy(valid_labels).to('cuda'))
         
-        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+        clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=30, 
                                n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
                                valid_ds=valid_dataset, 
                                class_weights=class_weights, gpu=True)
@@ -232,7 +231,7 @@ def run_exp_single_subject(df, task, preprocessing, model_folder, model_name,
         for train_idx, test_idx in cv_split:
             i += 1
             #valid_ds = TensorDataset(torch.from_numpy(data[test_idx]), torch.from_numpy(labels[test_idx]))
-            clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=28, 
+            clf, model = init_model(model_name, lr, n_epochs=25, batch_size=64, n_chan=30, 
                                n_classes=2, weight_decay=0, seed=42, input_window_samples=251, 
                                valid_ds=torch.utils.data.Subset(dataset, test_idx), 
                                class_weights=class_weights, gpu=True)

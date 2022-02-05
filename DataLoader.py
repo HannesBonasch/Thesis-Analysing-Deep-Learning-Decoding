@@ -23,6 +23,11 @@ def load_raw(data_path, task, preprocessing, subject_id):
         HelperFunctions.read_annotations_core(bids_path,raw)
         raw.set_channel_types({'HEOG_left': 'eog', 'HEOG_right': 'eog', 'VEOG_lower': 'eog'})
         raw.set_montage('standard_1020',match_case=False)
+        raw = raw.resample(250)
+        if task == "N170":
+             raw = raw.set_eeg_reference(ref_channels='average')
+        else: 
+            raw = raw.set_eeg_reference(ref_channels=['P9', 'P10'])
         if preprocessing == "medium":
             raw.filter(0.5,40)
         if preprocessing == "heavy":
@@ -30,7 +35,6 @@ def load_raw(data_path, task, preprocessing, subject_id):
             ica, badComps = HelperFunctions.load_precomputed_ica(bids_root, subject_id,task)
             HelperFunctions.add_ica_info(raw,ica)
             ica.apply(raw)
-        raw = raw.resample(250)
     return raw
 
 def epoch_raw(raw, task, preprocessing, reject_incorrect_responses=True):
@@ -64,10 +68,9 @@ def epoch_raw(raw, task, preprocessing, reject_incorrect_responses=True):
         epoch = mne.Epochs(raw, events_from_annot, event_dict,
                            tmin=tmin,tmax=tmax, preload=True,
                            reject_by_annotation=True, baseline=None, 
-                           picks=['F3','F7','FC3','C3','C5','P3','P7','P9',
-                                  'PO7','PO3','O1','Oz','Pz','CPz','Fz','F4',
-                                  'F8','FC4', 'FCz','Cz','C4','C6','P4','P8',
-                                  'P10','PO8','PO4','O2'], detrend=0)
+                           picks=['FP1','F3','F7','FC3','C3','C5','P3','P7','P9','PO7',
+                                  'PO3','O1','Oz','Pz','CPz','FP2','Fz','F4','F8','FC4',
+                                  'FCz','Cz','C4','C6','P4','P8','P10','PO8','PO4','O2',], detrend=0)
         
         # apply autoreject for heavy preprocessing to remove artefacts
         if preprocessing == "heavy":
