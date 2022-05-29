@@ -2,7 +2,7 @@
 
 This is the repository for my master thesis called "Analysing Deep Learning Decoding Methods on Multiple ERP Paradigms".
 
-The following is a very short, mostly visual look into the thesis, for more detail check out the pdf and code.
+The following is a very short, mostly visual look into the thesis, for more detail check out the pdf and the notebooks.
 
 ## Abstract:
 
